@@ -7,7 +7,6 @@ from re import A
 import re
 from knack.prompting import prompt_y_n
 from knack.util import CLIError
-from azure.cli.core.util import send_raw_request
 from azure.cli.command_modules.appservice._appservice_utils import _generic_site_operation
 from azure.cli.command_modules.appservice.custom import update_app_settings
 from azure.cli.core.azclierror import ArgumentUsageError
@@ -27,32 +26,8 @@ FALSE_STRING = "false"
 
 # region rest calls
 
-
-def get_resource_id(cmd, resource_group_name, name, slot):
-    sub_id = get_subscription_id(cmd.cli_ctx)
-
-    # TODO: Replace ARM call with SDK API after fixing swagger issues
-    resource_id = "/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Web/sites/{}".format(
-        sub_id,
-        resource_group_name,
-        name)
-    if slot is not None:
-        resource_id = resource_id + "/slots/" + slot
-    return resource_id
-
-
 def get_auth_settings_v2(cmd, resource_group_name, name, slot=None):
-    resource_id = get_resource_id(cmd, resource_group_name, name, slot)
-    management_hostname = cmd.cli_ctx.cloud.endpoints.resource_manager
-    request_url = "{}/{}/{}?api-version={}".format(
-        management_hostname.strip('/'),
-        resource_id,
-        "config/authSettingsV2/list",
-        "2020-12-01")
-
-    # TODO: Replace ARM call with SDK API after fixing swagger issues
-    r = send_raw_request(cmd.cli_ctx, "GET", request_url)
-    return r.json()
+    return _generic_site_operation(cmd.cli_ctx, resource_group_name, name, 'get_auth_settings_v2', slot)
 
 
 def update_auth_settings_v2_rest_call(cmd, resource_group_name, name, site_auth_settings_v2,
@@ -67,51 +42,29 @@ def update_auth_settings_v2_rest_call(cmd, resource_group_name, name, site_auth_
 
     if not overwrite_settings:  # if no auth v2 settings set, then default token store to true
         if is_new_auth_app:
-            if "login" not in site_auth_settings_v2.keys():
-                site_auth_settings_v2["login"] = {}
-            if "tokenStore" not in site_auth_settings_v2["login"].keys():
-                site_auth_settings_v2["login"]["tokenStore"] = {}
-                site_auth_settings_v2["login"]["tokenStore"]["enabled"] = True
+            if not getattr(site_auth_settings_v2, "login", None):
+                setattr(site_auth_settings_v2, "login", cmd.get_models("Login"))
+            if not getattr(site_auth_settings_v2.login, "token_store", None):
+                setattr(site_auth_settings_v2.login, "token_store", cmd.get_models("TokenStore"))
+            setattr(site_auth_settings_v2.login.token_store, "enabled", True)
 
-    final_json = {
-        "properties": site_auth_settings_v2
-    }
-
-    resource_id = get_resource_id(cmd, resource_group_name, name, slot)
-    management_hostname = cmd.cli_ctx.cloud.endpoints.resource_manager
-    request_url = "{}/{}/{}?api-version={}".format(
-        management_hostname.strip('/'),
-        resource_id,
-        "config/authSettingsV2",
-        "2020-12-01")
-
-    # TODO: Replace ARM call with SDK API after fixing swagger issues
-    r = send_raw_request(cmd.cli_ctx, "PUT", request_url, None, None, json.dumps(final_json))
-    return r.json()["properties"]
+    return _generic_site_operation(cmd.cli_ctx, resource_group_name, name, 'update_auth_settings_v2', slot, site_auth_settings_v2)
 
 
 def is_auth_v2_app(cmd, resource_group_name, name, slot=None):
-    resource_id = get_resource_id(cmd, resource_group_name, name, slot)
-    management_hostname = cmd.cli_ctx.cloud.endpoints.resource_manager
-    request_url = "{}/{}/{}?api-version={}".format(
-        management_hostname.strip('/'),
-        resource_id,
-        "config/authSettings/list",
-        "2020-12-01")
-
-    # TODO: Replace ARM call with SDK API after fixing swagger issues
-    r = send_raw_request(cmd.cli_ctx, "POST", request_url)
-    return r.json()["properties"]["configVersion"] == "v2"
+    return get_auth_settings(cmd, resource_group_name, name, slot).config_version == "v2"
 # endregion
 
 # region webapp auth
 
 
 def set_auth_settings_v2(cmd, resource_group_name, name, body=None, slot=None):  # pylint: disable=unused-argument
+    from azure.mgmt.web.models import SiteAuthSettingsV2
     if body is None:
         json_object = None
     else:
         json_object = json.loads(body)
+
     return update_auth_settings_v2_rest_call(cmd, resource_group_name, name, json_object,
                                              slot, overwrite_settings=True)
 
@@ -121,48 +74,51 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                             redirect_provider=None, enable_token_store=None, require_https=None,  # pylint: disable=unused-argument
                             proxy_convention=None, proxy_custom_host_header=None,  # pylint: disable=unused-argument
                             proxy_custom_proto_header=None, excluded_paths=None, slot=None):  # pylint: disable=unused-argument
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
     existing_auth = set_field_in_auth_settings(existing_auth, set_string)
 
     if enabled is not None:
-        if "platform" not in existing_auth.keys():
-            existing_auth["platform"] = {}
-        existing_auth["platform"]["enabled"] = enabled
+        if not getattr(existing_auth, "platform", None):
+            setattr(existing_auth, "platform", cmd.get_models("AuthPlatform"))
+        setattr(existing_auth.platform, "enabled", enabled)
 
     if runtime_version is not None:
-        if "platform" not in existing_auth.keys():
-            existing_auth["platform"] = {}
-        existing_auth["platform"]["runtimeVersion"] = runtime_version
+        if not getattr(existing_auth, "platform", None):
+            setattr(existing_auth, "platform", cmd.get_models("AuthPlatform"))
+        setattr(existing_auth.platform, "runtime_version", runtime_version)
 
     if config_file_path is not None:
-        if "platform" not in existing_auth.keys():
-            existing_auth["platform"] = {}
-        existing_auth["platform"]["configFilePath"] = config_file_path
+        if not getattr(existing_auth, "platform", None):
+            setattr(existing_auth, "platform", cmd.get_models("AuthPlatform"))
+        setattr(existing_auth.platform, "config_file_path", config_file_path)
 
     if unauthenticated_client_action is not None:
-        if "globalValidation" not in existing_auth.keys():
-            existing_auth["globalValidation"] = {}
-        existing_auth["globalValidation"]["unauthenticatedClientAction"] = unauthenticated_client_action
+        if not getattr(existing_auth, "global_validation", None):
+            setattr(existing_auth, "global_validation", cmd.get_models("GlobalValidation"))
+        setattr(existing_auth.global_validation, "unauthenticated_client_action", unauthenticated_client_action)
 
     if redirect_provider is not None:
-        if "globalValidation" not in existing_auth.keys():
-            existing_auth["globalValidation"] = {}
-        existing_auth["globalValidation"]["redirectToProvider"] = redirect_provider
+        if not getattr(existing_auth, "global_validation", None):
+            setattr(existing_auth, "global_validation", cmd.get_models("GlobalValidation"))
+        setattr(existing_auth.global_validation, "redirect_to_provider", redirect_provider)
 
     if enable_token_store is not None:
-        if "login" not in existing_auth.keys():
-            existing_auth["login"] = {}
-        if "tokenStore" not in existing_auth["login"].keys():
-            existing_auth["login"]["tokenStore"] = {}
-        existing_auth["login"]["tokenStore"]["enabled"] = enable_token_store
+        if not getattr(existing_auth, "login", None):
+            setattr(existing_auth, "login", cmd.get_models("Login"))
+        if not getattr(existing_auth.login, "token_store", None):
+            setattr(existing_auth.login, "token_store", cmd.get_models("TokenStore"))
+        setattr(existing_auth.login.token_store, "enabled", enable_token_store)
 
     if excluded_paths is not None:
-        if "globalValidation" not in existing_auth.keys():
-            existing_auth["globalValidation"] = {}
-        excluded_paths_list_string = excluded_paths[1:-1]
-        existing_auth["globalValidation"]["excludedPaths"] = excluded_paths_list_string.split(",")
+        if not getattr(existing_auth, "global_validation", None):
+            setattr(existing_auth, "global_validation", cmd.get_models("GlobalValidation"))
+        excluded_paths_list_temp = excluded_paths.strip("][}{").replace(" ", "").split(",")
+        excluded_paths_list = []
+        for path in excluded_paths_list_temp:
+            excluded_paths_list.append(path.strip("'"))
+        setattr(existing_auth.global_validation, "excluded_paths", excluded_paths_list)
 
-    existing_auth = update_http_settings_in_auth_settings(existing_auth, require_https,
+    existing_auth = update_http_settings_in_auth_settings(cmd, existing_auth, require_https,
                                                           proxy_convention, proxy_custom_host_header,
                                                           proxy_custom_proto_header)
 
@@ -244,22 +200,22 @@ def revert_to_auth_settings(cmd, resource_group_name, name, slot=None):  # pylin
 
 def is_app_new_to_auth(cmd, resource_group_name, name, slot):
     existing_site_auth_settings_v2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)
-    return json.dumps(existing_site_auth_settings_v2["properties"]) == "{}"
+    return getattr(existing_site_auth_settings_v2, "global_validation", None)
 
 
 def set_field_in_auth_settings_recursive(field_name_split, field_value, auth_settings):
     if len(field_name_split) == 1:
         if not field_value.startswith('[') or not field_value.endswith(']'):
-            auth_settings[field_name_split[0]] = field_value
+            auth_settings.field_name_split[0] = field_value
         else:
             field_value_list_string = field_value[1:-1]
-            auth_settings[field_name_split[0]] = field_value_list_string.split(",")
+            auth_settings.field_name_split[0] = field_value_list_string.split(",")
         return auth_settings
 
     remaining_field_names = field_name_split[1:]
     if field_name_split[0] not in auth_settings.keys():
-        auth_settings[field_name_split[0]] = {}
-    auth_settings[field_name_split[0]] = set_field_in_auth_settings_recursive(remaining_field_names,
+        auth_settings.field_name_split[0] = {}
+    auth_settings.field_name_split[0] = set_field_in_auth_settings_recursive(remaining_field_names,
                                                                               field_value,
                                                                               auth_settings[field_name_split[0]])
     return auth_settings
@@ -275,33 +231,34 @@ def set_field_in_auth_settings(auth_settings, set_string):
     return auth_settings
 
 
-def update_http_settings_in_auth_settings(auth_settings, require_https, proxy_convention,
+def update_http_settings_in_auth_settings(cmd, auth_settings, require_https, proxy_convention,
                                           proxy_custom_host_header, proxy_custom_proto_header):
+
     if require_https is not None:
-        if "httpSettings" not in auth_settings.keys():
-            auth_settings["httpSettings"] = {}
-        auth_settings["httpSettings"]["requireHttps"] = require_https
+        if not getattr(auth_settings, "http_settings", None):
+            setattr(auth_settings, "http_settings", cmd.get_models("HttpSettings"))
+        setattr(auth_settings.http_settings, "require_https", require_https)
 
     if proxy_convention is not None:
-        if "httpSettings" not in auth_settings.keys():
-            auth_settings["httpSettings"] = {}
-        if "forwardProxy" not in auth_settings["httpSettings"].keys():
-            auth_settings["httpSettings"]["forwardProxy"] = {}
-        auth_settings["httpSettings"]["forwardProxy"]["convention"] = proxy_convention
+        if not getattr(auth_settings, "http_settings", None):
+            setattr(auth_settings, "http_settings", cmd.get_models("HttpSettings"))
+        if not getattr(auth_settings.http_settings, "forward_proxy", None):
+            setattr(auth_settings.http_settings, "forward_proxy", cmd.get_models("ForwardProxy"))
+        setattr(auth_settings.http_settings.forward_proxy, "convention", proxy_convention)
 
     if proxy_custom_host_header is not None:
-        if "httpSettings" not in auth_settings.keys():
-            auth_settings["httpSettings"] = {}
-        if "forwardProxy" not in auth_settings["httpSettings"].keys():
-            auth_settings["httpSettings"]["forwardProxy"] = {}
-        auth_settings["httpSettings"]["forwardProxy"]["customHostHeaderName"] = proxy_custom_host_header
+        if not getattr(auth_settings, "http_settings", None):
+            setattr(auth_settings, "http_settings", cmd.get_models("HttpSettings"))
+        if not getattr(auth_settings.http_settings, "forward_proxy", None):
+            setattr(auth_settings.http_settings, "forward_proxy", cmd.get_models("ForwardProxy"))
+        setattr(auth_settings.http_settings, "custom_host_header_name", proxy_custom_host_header)
 
     if proxy_custom_proto_header is not None:
-        if "httpSettings" not in auth_settings.keys():
-            auth_settings["httpSettings"] = {}
-        if "forwardProxy" not in auth_settings["httpSettings"].keys():
-            auth_settings["httpSettings"]["forwardProxy"] = {}
-        auth_settings["httpSettings"]["forwardProxy"]["customProtoHeaderName"] = proxy_custom_proto_header
+        if not getattr(auth_settings, "http_settings", None):
+            setattr(auth_settings, "http_settings", cmd.get_models("HttpSettings"))
+        if not getattr(auth_settings.http_settings, "forward_proxy", None):
+            setattr(auth_settings.http_settings, "forward_proxy", cmd.get_models("ForwardProxy"))
+        setattr(auth_settings.http_settings, "custom_proto_header_name", proxy_custom_proto_header)
 
     return auth_settings
 

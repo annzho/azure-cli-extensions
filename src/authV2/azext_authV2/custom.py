@@ -7,12 +7,14 @@ from re import A
 import re
 from knack.prompting import prompt_y_n
 from knack.util import CLIError
+from azure.cli.core.util import send_raw_request, shell_safe_json_parse
 from azure.cli.command_modules.appservice._appservice_utils import _generic_site_operation
 from azure.cli.command_modules.appservice.custom import update_app_settings
 from azure.cli.core.azclierror import ArgumentUsageError
 from azure.cli.core.commands.client_factory import get_subscription_id
 from azure.cli.command_modules.appservice._params import AUTH_TYPES
 from azure.cli.core.cloud import AZURE_PUBLIC_CLOUD, AZURE_CHINA_CLOUD, AZURE_US_GOV_CLOUD, AZURE_GERMAN_CLOUD
+from azure.mgmt.web.models import SiteAuthSettingsV2
 
 MICROSOFT_SECRET_SETTING_NAME = "MICROSOFT_PROVIDER_AUTHENTICATION_SECRET"
 FACEBOOK_SECRET_SETTING_NAME = "FACEBOOK_PROVIDER_AUTHENTICATION_SECRET"
@@ -26,11 +28,25 @@ FALSE_STRING = "false"
 
 # region rest calls
 
+
+def get_resource_id(cmd, resource_group_name, name, slot):
+    sub_id = get_subscription_id(cmd.cli_ctx)
+
+    # TODO: Replace ARM call with SDK API after fixing swagger issues
+    resource_id = "/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Web/sites/{}".format(
+        sub_id,
+        resource_group_name,
+        name)
+    if slot is not None:
+        resource_id = resource_id + "/slots/" + slot
+    return resource_id
+
+
 def get_auth_settings_v2(cmd, resource_group_name, name, slot=None):
     return _generic_site_operation(cmd.cli_ctx, resource_group_name, name, 'get_auth_settings_v2', slot)
 
 
-def update_auth_settings_v2_rest_call(cmd, resource_group_name, name, site_auth_settings_v2,
+def update_auth_settings_v2_helper(cmd, resource_group_name, name, site_auth_settings_v2,
                                       slot=None, overwrite_settings=False, is_upgrade=False):  # pylint: disable=unused-argument
     is_using_v1 = get_config_version(cmd, resource_group_name, name, slot)["configVersion"] == 'v1'
     is_new_auth_app = is_app_new_to_auth(cmd, resource_group_name, name, slot)
@@ -52,21 +68,42 @@ def update_auth_settings_v2_rest_call(cmd, resource_group_name, name, site_auth_
 
 
 def is_auth_v2_app(cmd, resource_group_name, name, slot=None):
-    return get_auth_settings(cmd, resource_group_name, name, slot).config_version == "v2"
+    auth_settings = get_auth_settings(cmd, resource_group_name, name, slot)
+    return getattr(auth_settings, "config_version", None) == "v2"
 # endregion
 
 # region webapp auth
 
 
 def set_auth_settings_v2(cmd, resource_group_name, name, body=None, slot=None):  # pylint: disable=unused-argument
-    from azure.mgmt.web.models import SiteAuthSettingsV2
     if body is None:
         json_object = None
     else:
         json_object = json.loads(body)
 
-    return update_auth_settings_v2_rest_call(cmd, resource_group_name, name, json_object,
-                                             slot, overwrite_settings=True)
+    is_using_v1 = get_config_version(cmd, resource_group_name, name, slot)["configVersion"] == 'v1'
+    is_new_auth_app = is_app_new_to_auth(cmd, resource_group_name, name, slot)
+
+    if is_using_v1 and not is_new_auth_app:
+        msg = 'Usage Error: Cannot use auth v2 commands when the app is using auth v1. ' \
+              'Update the auth settings using the az webapp auth-classic command group.'
+        raise CLIError(msg)
+
+    final_json = {
+        "properties": json_object
+    }
+
+    resource_id = get_resource_id(cmd, resource_group_name, name, slot)
+    management_hostname = cmd.cli_ctx.cloud.endpoints.resource_manager
+    request_url = "{}/{}/{}?api-version={}".format(
+        management_hostname.strip('/'),
+        resource_id,
+        "config/authSettingsV2",
+        "2020-12-01")
+
+    # TODO: Replace ARM call with SDK API after fixing swagger issues
+    r = send_raw_request(cmd.cli_ctx, "PUT", request_url, None, None, json.dumps(final_json))
+    return r.json()["properties"]
 
 
 def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, enabled=None,  # pylint: disable=unused-argument
@@ -75,7 +112,12 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                             proxy_convention=None, proxy_custom_host_header=None,  # pylint: disable=unused-argument
                             proxy_custom_proto_header=None, excluded_paths=None, slot=None):  # pylint: disable=unused-argument
     existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
-    existing_auth = set_field_in_auth_settings(existing_auth, set_string)
+    print("existing auth:", existing_auth)
+    existing_auth = set_field_in_auth_settings(cmd, existing_auth, set_string)
+    print("using extension method:", existing_auth)
+    converted_object = shell_safe_json_parse(set_string)
+    print("using core method:", converted_object)
+    raise CLIError('Usage Error: Cannot use command az webapp auth upgrade when the app is using auth v2.')
 
     if enabled is not None:
         if not getattr(existing_auth, "platform", None):
@@ -123,7 +165,7 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                                                           proxy_custom_proto_header)
 
     json_object = existing_auth
-    return update_auth_settings_v2_rest_call(cmd, resource_group_name, name, json_object, slot)
+    return update_auth_settings_v2_helper(cmd, resource_group_name, name, json_object, slot)
 # endregion
 
 # region webapp auth config-version
@@ -133,8 +175,8 @@ def upgrade_to_auth_settings_v2(cmd, resource_group_name, name, slot=None):  # p
     if is_auth_v2_app(cmd, resource_group_name, name, slot):
         raise CLIError('Usage Error: Cannot use command az webapp auth upgrade when the app is using auth v2.')
     prep_auth_settings_for_v2(cmd, resource_group_name, name, slot)
-    site_auth_settings_v2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    return update_auth_settings_v2_rest_call(cmd, resource_group_name, name,
+    site_auth_settings_v2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    return update_auth_settings_v2_helper(cmd, resource_group_name, name,
                                              site_auth_settings_v2, slot, is_upgrade=True)
 
 
@@ -203,7 +245,7 @@ def is_app_new_to_auth(cmd, resource_group_name, name, slot):
     return getattr(existing_site_auth_settings_v2, "global_validation", None)
 
 
-def set_field_in_auth_settings_recursive(field_name_split, field_value, auth_settings):
+def set_field_in_auth_settings_recursive(cmd, field_name_split, field_value, auth_settings):
     if len(field_name_split) == 1:
         if not field_value.startswith('[') or not field_value.endswith(']'):
             auth_settings.field_name_split[0] = field_value
@@ -213,21 +255,22 @@ def set_field_in_auth_settings_recursive(field_name_split, field_value, auth_set
         return auth_settings
 
     remaining_field_names = field_name_split[1:]
-    if field_name_split[0] not in auth_settings.keys():
-        auth_settings.field_name_split[0] = {}
-    auth_settings.field_name_split[0] = set_field_in_auth_settings_recursive(remaining_field_names,
+    if not getattr(auth_settings, field_name_split[0], None):
+        # TODO: try catch?
+        setattr(auth_settings, field_name_split[0], cmd.get_models(field_name_split[0]))
+    auth_settings.field_name_split[0] = set_field_in_auth_settings_recursive(cmd, remaining_field_names,
                                                                               field_value,
-                                                                              auth_settings[field_name_split[0]])
+                                                                              auth_settings.field_name_split[0])
     return auth_settings
 
 
-def set_field_in_auth_settings(auth_settings, set_string):
+def set_field_in_auth_settings(cmd, auth_settings, set_string):
     if set_string is not None:
         split1 = set_string.split("=")
         fieldName = split1[0]
         fieldValue = split1[1]
         split2 = fieldName.split(".")
-        auth_settings = set_field_in_auth_settings_recursive(split2, fieldValue, auth_settings)
+        auth_settings = set_field_in_auth_settings_recursive(cmd, split2, fieldValue, auth_settings)
     return auth_settings
 
 
@@ -550,7 +593,7 @@ def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: di
             client_secret_certificate_issuer is not None):
         existing_auth["identityProviders"]["azureActiveDirectory"]["registration"] = registration
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["azureActiveDirectory"]
 # endregion
 
@@ -609,7 +652,7 @@ def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylin
     if app_id is not None or app_secret is not None or app_secret_setting_name is not None:
         existing_auth["identityProviders"]["facebook"]["registration"] = registration
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["facebook"]
 # endregion
 
@@ -666,7 +709,7 @@ def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint:
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
         existing_auth["identityProviders"]["gitHub"]["registration"] = registration
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["gitHub"]
 # endregion
 
@@ -730,7 +773,7 @@ def update_google_settings(cmd, resource_group_name, name, slot=None,  # pylint:
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
         existing_auth["identityProviders"]["google"]["registration"] = registration
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["google"]
 # endregion
 
@@ -781,7 +824,7 @@ def update_twitter_settings(cmd, resource_group_name, name, slot=None,  # pylint
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
     if consumer_key is not None or consumer_secret is not None or consumer_secret_setting_name is not None:
         existing_auth["identityProviders"]["twitter"]["registration"] = registration
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["twitter"]
 # endregion
 
@@ -839,7 +882,7 @@ def update_apple_settings(cmd, resource_group_name, name, slot=None,  # pylint: 
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
         existing_auth["identityProviders"]["apple"]["registration"] = registration
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, existing_auth, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
     return updated_auth_settings["identityProviders"]["apple"]
 # endregion
 
@@ -907,7 +950,7 @@ def add_openid_connect_provider_settings(cmd, resource_group_name, name, provide
 
     auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]["login"] = login
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, auth_settings, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
     return updated_auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]
 
 
@@ -970,7 +1013,7 @@ def update_openid_connect_provider_settings(cmd, resource_group_name, name, prov
         custom_open_id_connect_providers[provider_name]["registration"] = registration
     auth_settings["identityProviders"]["customOpenIdConnectProviders"] = custom_open_id_connect_providers
 
-    updated_auth_settings = update_auth_settings_v2_rest_call(cmd, resource_group_name, name, auth_settings, slot)
+    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
     return updated_auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]
 
 
@@ -986,6 +1029,6 @@ def remove_openid_connect_provider_settings(cmd, resource_group_name, name, prov
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
     auth_settings["identityProviders"]["customOpenIdConnectProviders"].pop(provider_name, None)
-    update_auth_settings_v2_rest_call(cmd, resource_group_name, name, auth_settings, slot)
+    update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
     return {}
 # endregion

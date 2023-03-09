@@ -664,17 +664,18 @@ def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylin
 
 
 def get_github_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "gitHub" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "git_hub", None):
         return {}
-    return auth_settings["identityProviders"]["gitHub"]
+    return auth_settings.identity_providers.git_hub
 
 
 def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
                            client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                            scopes=None, client_secret=None, yes=False):    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and client_secret_setting_name is not None:
         raise CLIError('Usage Error: --client-secret and --client-secret-setting-name cannot '
                        'both be configured to non empty strings')
@@ -685,36 +686,41 @@ def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint:
             raise CLIError('Usage Error: --client-secret cannot be used without agreeing to add '
                            'app settings to the web app.')
 
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "gitHub" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["gitHub"] = {}
+    # Retrieve any existing auth settings
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "git_hub", None):
+        setattr(existing_auth.identity_providers, "git_hub", cmd.get_models("GitHub"))
+
+    # Create registration object using provided parameters
+    registration = cmd.get_models("ClientRegistration")
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        if "registration" not in existing_auth["identityProviders"]["gitHub"].keys():
-            existing_auth["identityProviders"]["gitHub"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["gitHub"]["registration"]
+        if not getattr(existing_auth.identity_providers.git_hub, "registration", None):
+            setattr(existing_auth.identity_providers.git_hub, "registration", cmd.get_models("ClientRegistration"))
+        registration = existing_auth.identity_providers.git_hub.registration
     if scopes is not None:
-        if "login" not in existing_auth["identityProviders"]["gitHub"].keys():
-            existing_auth["identityProviders"]["gitHub"]["login"] = {}
+        if not getattr(existing_auth.identity_providers.git_hub, "login", None):
+            setattr(existing_auth.identity_providers.git_hub, "login", cmd.get_models("LoginScopes"))
 
     if client_id is not None:
-        registration["clientId"] = client_id
+        setattr(registration, "client_id", client_id)
     if client_secret_setting_name is not None:
-        registration["clientSecretSettingName"] = client_secret_setting_name
+        setattr(registration, "client_secret_setting_name", client_secret_setting_name)
     if client_secret is not None:
-        registration["clientSecretSettingName"] = GITHUB_SECRET_SETTING_NAME
+        setattr(registration, "client_secret_setting_name", GITHUB_SECRET_SETTING_NAME)
         settings = []
         settings.append(GITHUB_SECRET_SETTING_NAME + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+
+    # Update registration property with newly created registration object
     if scopes is not None:
-        existing_auth["identityProviders"]["gitHub"]["login"]["scopes"] = scopes.split(",")
+        setattr(existing_auth.identity_providers.git_hub.login, "scopes", scopes.split(","))
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        existing_auth["identityProviders"]["gitHub"]["registration"] = registration
+        setattr(existing_auth.identity_providers.git_hub.login, "registration", registration)
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["gitHub"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "git_hub", None)
 # endregion
 
 # region webapp auth google

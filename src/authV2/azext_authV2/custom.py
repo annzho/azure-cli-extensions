@@ -452,12 +452,12 @@ def update_auth_classic_settings(cmd, resource_group_name, name, enabled=None, a
 
 
 def get_aad_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "azureActiveDirectory" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "azure_active_directory", None):
         return {}
-    return auth_settings["identityProviders"]["azureActiveDirectory"]
+    return auth_settings.identity_providers.azure_active_directory
 
 
 def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
@@ -467,6 +467,7 @@ def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: di
                         client_secret_certificate_san=None,  # pylint: disable=unused-argument
                         client_secret_certificate_issuer=None,  # pylint: disable=unused-argument
                         yes=False, tenant_id=None):    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and client_secret_setting_name is not None:
         raise ArgumentUsageError('Usage Error: --client-secret and --client-secret-setting-name cannot both be '
                                  'configured to non empty strings')
@@ -500,14 +501,13 @@ def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: di
         raise ArgumentUsageError('Usage Error: --issuer and --tenant-id cannot be configured '
                                  'to non empty strings at the same time.')
 
+    # Retrieve any existing auth settings
     is_new_aad_app = False
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    validation = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "azureActiveDirectory" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["azureActiveDirectory"] = {}
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "azure_active_directory", None):
+        setattr(existing_auth.identity_providers, "azure_active_directory", cmd.get_models("AzureActiveDirectory"))
         is_new_aad_app = True
 
     if is_new_aad_app and issuer is None and tenant_id is None:
@@ -528,90 +528,89 @@ def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: di
         if tenant_id is not None:
             openid_issuer = authority + "/" + tenant_id + "/v2.0"
 
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    validation = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "azureActiveDirectory" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["azureActiveDirectory"] = {}
+    # Create registration and validation objects using provided parameters
+    registration = cmd.get_models("AzureActiveDirectoryRegistration")
+    validation = cmd.get_models("AzureActiveDirectoryValidation")
     if (client_id is not None or client_secret is not None or
             client_secret_setting_name is not None or openid_issuer is not None or
             client_secret_certificate_thumbprint is not None or
             client_secret_certificate_san is not None or
             client_secret_certificate_issuer is not None):
-        if "registration" not in existing_auth["identityProviders"]["azureActiveDirectory"].keys():
-            existing_auth["identityProviders"]["azureActiveDirectory"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["azureActiveDirectory"]["registration"]
+        if not getattr(existing_auth.identity_providers.azure_active_directory, "registration", None):
+            setattr(existing_auth.identity_providers.azure_active_directory, "registration", cmd.get_models("AzureActiveDirectoryRegistration"))
+        registration = existing_auth.identity_providers.azure_active_directory.registration
     if allowed_token_audiences is not None:
-        if "validation" not in existing_auth["identityProviders"]["azureActiveDirectory"].keys():
-            existing_auth["identityProviders"]["azureActiveDirectory"]["validation"] = {}
-        validation = existing_auth["identityProviders"]["azureActiveDirectory"]["validation"]
+        if not getattr(existing_auth.identity_providers.azure_active_directory, "validation", None):
+            setattr(existing_auth.identity_providers.azure_active_directory, "validation", cmd.get_models("AzureActiveDirectoryValidation"))
+        validation = existing_auth.identity_providers.azure_active_directory.validation
 
     if client_id is not None:
-        registration["clientId"] = client_id
+        setattr(registration, "client_id", client_id)
     if client_secret_setting_name is not None:
-        registration["clientSecretSettingName"] = client_secret_setting_name
+        setattr(registration, "client_secret_setting_name", client_secret_setting_name)
     if client_secret is not None:
-        registration["clientSecretSettingName"] = MICROSOFT_SECRET_SETTING_NAME
+        setattr(registration, "client_secret_setting_name", MICROSOFT_SECRET_SETTING_NAME)
         settings = []
         settings.append(MICROSOFT_SECRET_SETTING_NAME + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
     if client_secret_setting_name is not None or client_secret is not None:
-        if "clientSecretCertificateThumbprint" in registration.keys() and registration["clientSecretCertificateThumbprint"] is not None:
-            registration["clientSecretCertificateThumbprint"] = None
-        if "clientSecretCertificateSubjectAlternativeName" in registration.keys() and registration["clientSecretCertificateSubjectAlternativeName"] is not None:
-            registration["clientSecretCertificateSubjectAlternativeName"] = None
-        if "clientSecretCertificateIssuer" in registration.keys() and registration["clientSecretCertificateIssuer"] is not None:
-            registration["clientSecretCertificateIssuer"] = None
+        if getattr(registration, "client_secret_certificate_thumbprint", None) is not None:
+            setattr(registration, "client_secret_certificate_thumbprint", None)
+        if getattr(registration, "client_secret_certificate_subject_alternative_name", None) is not None:
+            setattr(registration, "client_secret_certificate_subject_alternative_name", None)
+        if getattr(registration, "client_secret_certificate_issuer", None) is not None:
+            setattr(registration, "client_secret_certificate_issuer", None)
     if client_secret_certificate_thumbprint is not None:
-        registration["clientSecretCertificateThumbprint"] = client_secret_certificate_thumbprint
-        if "clientSecretSettingName" in registration.keys() and registration["clientSecretSettingName"] is not None:
-            registration["clientSecretSettingName"] = None
-        if "clientSecretCertificateSubjectAlternativeName" in registration.keys() and registration["clientSecretCertificateSubjectAlternativeName"] is not None:
-            registration["clientSecretCertificateSubjectAlternativeName"] = None
-        if "clientSecretCertificateIssuer" in registration.keys() and registration["clientSecretCertificateIssuer"] is not None:
-            registration["clientSecretCertificateIssuer"] = None
+        setattr(registration, "client_secret_certificate_thumbprint", client_secret_certificate_thumbprint)
+        if getattr(registration, "client_secret_setting_name", None) is not None:
+            setattr(registration, "client_secret_setting_name", None)
+        if getattr(registration, "client_secret_certificate_subject_alternative_name", None) is not None:
+            setattr(registration, "client_secret_certificate_subject_alternative_name", None)
+        if getattr(registration, "client_secret_certificate_issuer", None) is not None:
+            setattr(registration, "client_secret_certificate_issuer", None)
     if client_secret_certificate_san is not None:
-        registration["clientSecretCertificateSubjectAlternativeName"] = client_secret_certificate_san
+        setattr(registration, "client_secret_certificate_subject_alternative_name", client_secret_certificate_san)
     if client_secret_certificate_issuer is not None:
-        registration["clientSecretCertificateIssuer"] = client_secret_certificate_issuer
+        setattr(registration, "client_secret_certificate_issuer", client_secret_certificate_issuer)
     if client_secret_certificate_san is not None and client_secret_certificate_issuer is not None:
-        if "clientSecretSettingName" in registration.keys() and registration["clientSecretSettingName"] is not None:
-            registration["clientSecretSettingName"] = None
-        if "clientSecretCertificateThumbprint" in registration.keys() and registration["clientSecretCertificateThumbprint"] is not None:
-            registration["clientSecretCertificateThumbprint"] = None
+        if getattr(registration, "client_secret_setting_name", None) is not None:
+            setattr(registration, "client_secret_setting_name", None)
+        if getattr(registration, "client_secret_certificate_thumbprint", None) is not None:
+            setattr(registration, "client_secret_certificate_thumbprint", None)
     if openid_issuer is not None:
-        registration["openIdIssuer"] = openid_issuer
+        setattr(registration, "open_id_issuer", openid_issuer)
+
+    # Update registration and validation properties with newly created registration and validation objects
     if allowed_token_audiences is not None:
-        validation["allowedAudiences"] = allowed_token_audiences.split(",")
-        existing_auth["identityProviders"]["azureActiveDirectory"]["validation"] = validation
+        setattr(validation, "allowed_audiences", allowed_token_audiences.split(","))
+        setattr(existing_auth.identity_providers.azure_active_directory, "validation", validation)
     if (client_id is not None or client_secret is not None or
             client_secret_setting_name is not None or issuer is not None or
             client_secret_certificate_thumbprint is not None or
             client_secret_certificate_san is not None or
             client_secret_certificate_issuer is not None):
-        existing_auth["identityProviders"]["azureActiveDirectory"]["registration"] = registration
-
+        setattr(existing_auth.identity_providers.azure_active_directory, "registration", registration)
+    
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["azureActiveDirectory"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "azure_active_directory", None)
 # endregion
 
 # region webapp auth facebook
 
 
 def get_facebook_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "facebook" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "facebook", None):
         return {}
-    return auth_settings["identityProviders"]["facebook"]
+    return auth_settings.identity_providers.facebook
 
 
 def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
                              app_id=None, app_secret_setting_name=None,  # pylint: disable=unused-argument
                              graph_api_version=None, scopes=None, app_secret=None, yes=False):    # pylint: disable=unused-argument
+    # Validate parameters
     if app_secret is not None and app_secret_setting_name is not None:
         raise CLIError('Usage Error: --app-secret and --app-secret-setting-name cannot both be configured '
                        'to non empty strings')
@@ -622,38 +621,43 @@ def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylin
             raise CLIError('Usage Error: --app-secret cannot be used without agreeing to add app '
                            'settings to the web app.')
 
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "facebook" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["facebook"] = {}
+    # Retrieve any existing auth settings
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "facebook", None):
+        setattr(existing_auth.identity_providers, "facebook", cmd.get_models("Facebook"))
+
+    # Create registration object using provided parameters
+    registration = cmd.get_models("AppRegistration")
     if app_id is not None or app_secret is not None or app_secret_setting_name is not None:
-        if "registration" not in existing_auth["identityProviders"]["facebook"].keys():
-            existing_auth["identityProviders"]["facebook"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["facebook"]["registration"]
+        if not getattr(existing_auth.identity_providers.facebook, "registration", None):
+            setattr(existing_auth.identity_providers.facebook, "registration", cmd.get_models("AppRegistration"))
+        registration = existing_auth.identity_providers.facebook.registration
     if scopes is not None:
-        if "login" not in existing_auth["identityProviders"]["facebook"].keys():
-            existing_auth["identityProviders"]["facebook"]["login"] = {}
+        if not getattr(existing_auth.identity_providers.facebook, "login", None):
+            setattr(existing_auth.identity_providers.facebook, "login", cmd.get_models("LoginScopes"))
 
     if app_id is not None:
-        registration["appId"] = app_id
+        setattr(registration, "app_id", app_id)
     if app_secret_setting_name is not None:
-        registration["appSecretSettingName"] = app_secret_setting_name
+        setattr(registration, "app_secret_setting_name", app_secret_setting_name)
     if app_secret is not None:
-        registration["appSecretSettingName"] = FACEBOOK_SECRET_SETTING_NAME
+        setattr(registration, "app_secret_setting_name", FACEBOOK_SECRET_SETTING_NAME)
         settings = []
         settings.append(FACEBOOK_SECRET_SETTING_NAME + '=' + app_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+
+    # Update registration property with newly created registration object
     if graph_api_version is not None:
-        existing_auth["identityProviders"]["facebook"]["graphApiVersion"] = graph_api_version
+        setattr(existing_auth.identity_providers.facebook, "graph_api_version", graph_api_version)
     if scopes is not None:
-        existing_auth["identityProviders"]["facebook"]["login"]["scopes"] = scopes.split(",")
+        setattr(existing_auth.identity_providers.facebook.login, "scopes", scopes.split(","))
     if app_id is not None or app_secret is not None or app_secret_setting_name is not None:
-        existing_auth["identityProviders"]["facebook"]["registration"] = registration
+        setattr(existing_auth.identity_providers.facebook, "registration", registration)
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["facebook"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "facebook", None)
 # endregion
 
 # region webapp auth github

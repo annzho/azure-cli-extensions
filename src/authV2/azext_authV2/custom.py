@@ -580,7 +580,7 @@ def update_aad_settings(cmd, resource_group_name, name, slot=None,  # pylint: di
     if openid_issuer is not None:
         setattr(registration, "open_id_issuer", openid_issuer)
 
-    # Update registration and validation properties with newly created registration and validation objects
+    # Update registration and validation properties
     if allowed_token_audiences is not None:
         setattr(validation, "allowed_audiences", allowed_token_audiences.split(","))
         setattr(existing_auth.identity_providers.azure_active_directory, "validation", validation)
@@ -628,7 +628,7 @@ def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylin
     if not getattr(existing_auth.identity_providers, "facebook", None):
         setattr(existing_auth.identity_providers, "facebook", cmd.get_models("Facebook"))
 
-    # Create registration object using provided parameters
+    # Set up properties and create registration object using provided parameters
     registration = cmd.get_models("AppRegistration")
     if app_id is not None or app_secret is not None or app_secret_setting_name is not None:
         if not getattr(existing_auth.identity_providers.facebook, "registration", None):
@@ -648,7 +648,7 @@ def update_facebook_settings(cmd, resource_group_name, name, slot=None,  # pylin
         settings.append(FACEBOOK_SECRET_SETTING_NAME + '=' + app_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
 
-    # Update registration property with newly created registration object
+    # Update properties
     if graph_api_version is not None:
         setattr(existing_auth.identity_providers.facebook, "graph_api_version", graph_api_version)
     if scopes is not None:
@@ -693,7 +693,7 @@ def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint:
     if not getattr(existing_auth.identity_providers, "git_hub", None):
         setattr(existing_auth.identity_providers, "git_hub", cmd.get_models("GitHub"))
 
-    # Create registration object using provided parameters
+    # Set up properties and create registration object using provided parameters
     registration = cmd.get_models("ClientRegistration")
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
         if not getattr(existing_auth.identity_providers.git_hub, "registration", None):
@@ -713,7 +713,7 @@ def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint:
         settings.append(GITHUB_SECRET_SETTING_NAME + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
 
-    # Update registration property with newly created registration object
+    # Update properties
     if scopes is not None:
         setattr(existing_auth.identity_providers.git_hub.login, "scopes", scopes.split(","))
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
@@ -727,17 +727,18 @@ def update_github_settings(cmd, resource_group_name, name, slot=None,  # pylint:
 
 
 def get_google_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "google" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "google", None):
         return {}
-    return auth_settings["identityProviders"]["google"]
+    return auth_settings.identity_providers.google
 
 
 def update_google_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
                            client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                            scopes=None, allowed_token_audiences=None, client_secret=None, yes=False):    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and client_secret_setting_name is not None:
         raise CLIError('Usage Error: --client-secret and --client-secret-setting-name cannot '
                        'both be configured to non empty strings')
@@ -748,43 +749,48 @@ def update_google_settings(cmd, resource_group_name, name, slot=None,  # pylint:
             raise CLIError('Usage Error: --client-secret cannot be used without agreeing to add '
                            'app settings to the web app.')
 
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    validation = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "google" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["google"] = {}
+    # Retrieve any existing auth settings
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "google", None):
+        setattr(existing_auth.identity_providers, "google", cmd.get_models("Google"))
+
+    # Set up properties and create registration and validation objects using provided parameters
+    registration = cmd.get_models("ClientRegistration")
+    validation = cmd.get_models("AllowedAudiencesValidation")
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        if "registration" not in existing_auth["identityProviders"]["google"].keys():
-            existing_auth["identityProviders"]["google"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["google"]["registration"]
+        if not getattr(existing_auth.identity_providers.google, "registration", None):
+            setattr(existing_auth.identity_providers.google, "registration", cmd.get_models("ClientRegistration"))
+        registration = existing_auth.identity_providers.google.registration
     if scopes is not None:
-        if "login" not in existing_auth["identityProviders"]["google"].keys():
-            existing_auth["identityProviders"]["google"]["login"] = {}
+        if not getattr(existing_auth.identity_providers.google, "login", None):
+            setattr(existing_auth.identity_providers.google, "login", cmd.get_models("LoginScopes"))
     if allowed_token_audiences is not None:
-        if "validation" not in existing_auth["identityProviders"]["google"].keys():
-            existing_auth["identityProviders"]["google"]["validation"] = {}
+        if not getattr(existing_auth.identity_providers.google, "validation", None):
+            setattr(existing_auth.identity_providers.google, "validation", cmd.get_models("AllowedAudiencesValidation"))
 
     if client_id is not None:
-        registration["clientId"] = client_id
+        setattr(registration, "client_id", client_id)
     if client_secret_setting_name is not None:
-        registration["clientSecretSettingName"] = client_secret_setting_name
+        setattr(registration, "client_secret_setting_name", client_secret_setting_name)
     if client_secret is not None:
-        registration["clientSecretSettingName"] = GOOGLE_SECRET_SETTING_NAME
+        setattr(registration, "client_secret_setting_name", GOOGLE_SECRET_SETTING_NAME)
         settings = []
         settings.append(GOOGLE_SECRET_SETTING_NAME + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+
+    # Update properties 
     if scopes is not None:
-        existing_auth["identityProviders"]["google"]["login"]["scopes"] = scopes.split(",")
+        setattr(existing_auth.identity_providers.google.login, "scopes", scopes.split(","))
     if allowed_token_audiences is not None:
-        validation["allowedAudiences"] = allowed_token_audiences.split(",")
-        existing_auth["identityProviders"]["google"]["validation"] = validation
+        setattr(validation, "allowed_audiences", allowed_token_audiences.split(","))
+        setattr(existing_auth.identity_providers.google, "validation", validation)
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        existing_auth["identityProviders"]["google"]["registration"] = registration
+        setattr(existing_auth.identity_providers.google, "registration", registration)
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["google"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "google", None)
 # endregion
 
 # region webapp auth twitter

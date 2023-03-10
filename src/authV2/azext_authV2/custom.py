@@ -797,17 +797,18 @@ def update_google_settings(cmd, resource_group_name, name, slot=None,  # pylint:
 
 
 def get_twitter_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "twitter" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "twitter", None):
         return {}
-    return auth_settings["identityProviders"]["twitter"]
+    return auth_settings.identity_providers.twitter
 
 
 def update_twitter_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
                             consumer_key=None, consumer_secret_setting_name=None,   # pylint: disable=unused-argument
                             consumer_secret=None, yes=False):    # pylint: disable=unused-argument
+    # Validate parameters
     if consumer_secret is not None and consumer_secret_setting_name is not None:
         raise CLIError('Usage Error: --consumer-secret and --consumer-secret-setting-name cannot '
                        'both be configured to non empty strings')
@@ -818,30 +819,36 @@ def update_twitter_settings(cmd, resource_group_name, name, slot=None,  # pylint
             raise CLIError('Usage Error: --consumer-secret cannot be used without agreeing '
                            'to add app settings to the web app.')
 
-    registration = {}
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "twitter" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["twitter"] = {}
+    # Retrieve any existing auth settings
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "twitter", None):
+        setattr(existing_auth.identity_providers, "twitter", cmd.get_models("Twitter"))
+    
+    # Set up properties and create registration object using provided parameters
+    registration = cmd.get_models("TwitterRegistration")
     if consumer_key is not None or consumer_secret is not None or consumer_secret_setting_name is not None:
-        if "registration" not in existing_auth["identityProviders"]["twitter"].keys():
-            existing_auth["identityProviders"]["twitter"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["twitter"]["registration"]
+        if not getattr(existing_auth.identity_providers.twitter, "registration", None):
+            setattr(existing_auth.identity_providers.twitter, "registration", cmd.get_models("TwitterRegistration"))
+        registration = existing_auth.identity_providers.twitter.registration
 
     if consumer_key is not None:
-        registration["consumerKey"] = consumer_key
+        setattr(registration, "consumer_key", consumer_key)
     if consumer_secret_setting_name is not None:
-        registration["consumerSecretSettingName"] = consumer_secret_setting_name
+        setattr(registration, "consumer_secret_setting_name", consumer_secret_setting_name)
     if consumer_secret is not None:
-        registration["consumerSecretSettingName"] = TWITTER_SECRET_SETTING_NAME
+        setattr(registration, "consumer_secret_setting_name", TWITTER_SECRET_SETTING_NAME)
         settings = []
         settings.append(TWITTER_SECRET_SETTING_NAME + '=' + consumer_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+
+    # Update properties
     if consumer_key is not None or consumer_secret is not None or consumer_secret_setting_name is not None:
-        existing_auth["identityProviders"]["twitter"]["registration"] = registration
+        setattr(existing_auth.identity_providers.twitter, "registration", registration)
+
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["twitter"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "twitter", None)
 # endregion
 
 # region webapp auth apple

@@ -855,17 +855,18 @@ def update_twitter_settings(cmd, resource_group_name, name, slot=None,  # pylint
 
 
 def get_apple_settings(cmd, resource_group_name, name, slot=None):
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         return {}
-    if "apple" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "apple", None):
         return {}
-    return auth_settings["identityProviders"]["apple"]
+    return auth_settings.identity_providers.apple
 
 
 def update_apple_settings(cmd, resource_group_name, name, slot=None,  # pylint: disable=unused-argument
                           client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                           scopes=None, client_secret=None, yes=False):    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and client_secret_setting_name is not None:
         raise CLIError('Usage Error: --client-secret and --client-secret-setting-name '
                        'cannot both be configured to non empty strings')
@@ -877,36 +878,41 @@ def update_apple_settings(cmd, resource_group_name, name, slot=None,  # pylint: 
             raise CLIError('Usage Error: --client-secret cannot be used without agreeing '
                            'to add app settings to the web app.')
 
-    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    registration = {}
-    if "identityProviders" not in existing_auth.keys():
-        existing_auth["identityProviders"] = {}
-    if "apple" not in existing_auth["identityProviders"].keys():
-        existing_auth["identityProviders"]["apple"] = {}
+    # Retrieve any existing auth settings
+    existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(existing_auth, "identity_providers", None):
+        setattr(existing_auth, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(existing_auth.identity_providers, "apple", None):
+        setattr(existing_auth.identity_providers, "apple", cmd.get_models("Apple"))
+
+    # Set up properties and create registration object using provided parameters
+    registration = cmd.get_models("AppleRegistration")
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        if "registration" not in existing_auth["identityProviders"]["apple"].keys():
-            existing_auth["identityProviders"]["apple"]["registration"] = {}
-        registration = existing_auth["identityProviders"]["apple"]["registration"]
+        if not getattr(existing_auth.identity_providers.apple, "registration", None):
+            setattr(existing_auth.identity_providers.apple, "registration", cmd.get_models("AppleRegistration"))
+        registration = existing_auth.identity_providers.apple.registration
     if scopes is not None:
-        if "login" not in existing_auth["identityProviders"]["apple"].keys():
-            existing_auth["identityProviders"]["apple"]["login"] = {}
+        if not getattr(existing_auth.identity_providers.apple, "login", None):
+            setattr(existing_auth.identity_providers.apple, "login", cmd.get_models("LoginScopes"))
 
     if client_id is not None:
-        registration["clientId"] = client_id
+        setattr(registration, "client_id", client_id)
     if client_secret_setting_name is not None:
-        registration["clientSecretSettingName"] = client_secret_setting_name
+        setattr(registration, "client_secret_setting_name", client_secret_setting_name)
     if client_secret is not None:
-        registration["clientSecretSettingName"] = 'APPLE_PROVIDER_AUTHENTICATION_SECRET'
+        setattr(registration, "client_secret_setting_name", 'APPLE_PROVIDER_AUTHENTICATION_SECRET')
         settings = []
         settings.append('APPLE_PROVIDER_AUTHENTICATION_SECRET=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+
+    # Update properties
     if scopes is not None:
-        existing_auth["identityProviders"]["apple"]["login"]["scopes"] = scopes.split(",")
+        setattr(existing_auth.identity_providers.apple.login, "scopes", scopes.split(","))
     if client_id is not None or client_secret is not None or client_secret_setting_name is not None:
-        existing_auth["identityProviders"]["apple"]["registration"] = registration
+        setattr(existing_auth.identity_providers.apple, "registration", registration)
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
-    return updated_auth_settings["identityProviders"]["apple"]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "apple", None)
 # endregion
 
 # region webapp auth openid-connect

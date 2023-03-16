@@ -2,6 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License. See License.txt in the project root for license information.
 # --------------------------------------------------------------------------------------------
+# mypy: disable-error-code=import
 import json
 from re import A
 import re
@@ -14,7 +15,7 @@ from azure.cli.core.azclierror import ArgumentUsageError
 from azure.cli.core.commands.client_factory import get_subscription_id
 from azure.cli.command_modules.appservice._params import AUTH_TYPES
 from azure.cli.core.cloud import AZURE_PUBLIC_CLOUD, AZURE_CHINA_CLOUD, AZURE_US_GOV_CLOUD, AZURE_GERMAN_CLOUD
-from azure.mgmt.web.models import SiteAuthSettingsV2
+from azure.mgmt.web.models import SiteAuthSettingsV2, CustomOpenIdConnectProvider, OpenIdConnectRegistration, OpenIdConnectClientCredential, OpenIdConnectLogin, OpenIdConnectConfig
 
 MICROSOFT_SECRET_SETTING_NAME = "MICROSOFT_PROVIDER_AUTHENTICATION_SECRET"
 FACEBOOK_SECRET_SETTING_NAME = "FACEBOOK_PROVIDER_AUTHENTICATION_SECRET"
@@ -919,23 +920,24 @@ def update_apple_settings(cmd, resource_group_name, name, slot=None,  # pylint: 
 
 
 def get_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None):  # pylint: disable=unused-argument
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if "customOpenIdConnectProviders" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "custom_open_id_connect_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if provider_name not in auth_settings["identityProviders"]["customOpenIdConnectProviders"].keys():
+    if provider_name not in auth_settings.identity_providers.custom_open_id_connect_providers.keys():
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    return auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]
+    return auth_settings.identity_providers.custom_open_id_connect_providers[provider_name]
 
 
 def add_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None,  # pylint: disable=unused-argument
                                          client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                                          openid_configuration=None, scopes=None,        # pylint: disable=unused-argument
-                                         client_secret=None, yes=False):    # pylint: disable=unused-argument
+                                         client_secret=None, yes=False) -> CustomOpenIdConnectProvider:    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and not yes:
         msg = 'Configuring --client-secret will add app settings to the web app. ' \
             'Are you sure you want to continue?'
@@ -943,50 +945,52 @@ def add_openid_connect_provider_settings(cmd, resource_group_name, name, provide
             raise CLIError('Usage Error: --client-secret cannot be used without agreeing '
                            'to add app settings to the web app.')
 
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
-        auth_settings["identityProviders"] = {}
-    if "customOpenIdConnectProviders" not in auth_settings["identityProviders"].keys():
-        auth_settings["identityProviders"]["customOpenIdConnectProviders"] = {}
-    if provider_name in auth_settings["identityProviders"]["customOpenIdConnectProviders"].keys():
+    # Check if customer OIDC provider already configured
+    auth_settings: SiteAuthSettingsV2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
+        setattr(auth_settings, "identity_providers", cmd.get_models("IdentityProviders"))
+    if not getattr(auth_settings.identity_providers, "custom_open_id_connect_providers", None):
+        setattr(auth_settings.identity_providers, "custom_open_id_connect_providers", {})
+    if provider_name in auth_settings.identity_providers.custom_open_id_connect_providers.keys():
         raise CLIError('Usage Error: The following custom OpenID Connect provider has already been '
                        'configured: ' + provider_name + '. Please use az webapp auth oidc update to '
                        'update the provider.')
 
+    # Set up provider configuration
     final_client_secret_setting_name = client_secret_setting_name
     if client_secret is not None:
         final_client_secret_setting_name = get_oidc_client_setting_app_setting_name(provider_name)
         settings = []
         settings.append(final_client_secret_setting_name + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
+    
+    # Set registration fields
+    registration: OpenIdConnectRegistration = OpenIdConnectRegistration(
+        client_id=client_id, 
+        client_credential=OpenIdConnectClientCredential(client_secret_setting_name=final_client_secret_setting_name),
+        open_id_connect_configuration=OpenIdConnectConfig(well_known_open_id_configuration=openid_configuration))
 
-    auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name] = {
-        "registration": {
-            "clientId": client_id,
-            "clientCredential": {
-                "clientSecretSettingName": final_client_secret_setting_name
-            },
-            "openIdConnectConfiguration": {
-                "wellKnownOpenIdConfiguration": openid_configuration
-            }
-        }
-    }
-    login = {}
+    # Set login fields
+    temp_scopes: list[str] = []
     if scopes is not None:
-        login["scopes"] = scopes.split(',')
+        temp_scopes = scopes.split(',')
     else:
-        login["scopes"] = ["openid"]
+        temp_scopes = ["openid"]
+    login: OpenIdConnectLogin = OpenIdConnectLogin(scopes=temp_scopes)
 
-    auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]["login"] = login
+    auth_settings.identity_providers.custom_open_id_connect_providers[provider_name] = CustomOpenIdConnectProvider(
+        registration=registration, 
+        login=login)
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
-    return updated_auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)[provider_name]
 
 
 def update_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None,  # pylint: disable=unused-argument
                                             client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                                             openid_configuration=None, scopes=None,  # pylint: disable=unused-argument
-                                            client_secret=None, yes=False):    # pylint: disable=unused-argument
+                                            client_secret=None, yes=False) -> CustomOpenIdConnectProvider:    # pylint: disable=unused-argument
+    # Validate parameters
     if client_secret is not None and not yes:
         msg = 'Configuring --client-secret will add app settings to the web app. ' \
             'Are you sure you want to continue?'
@@ -994,70 +998,75 @@ def update_openid_connect_provider_settings(cmd, resource_group_name, name, prov
             raise CLIError('Usage Error: --client-secret cannot be used without agreeing '
                            'to add app settings to the web app.')
 
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    # Retrieve existing provider configuration
+    auth_settings: SiteAuthSettingsV2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if "customOpenIdConnectProviders" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "custom_open_id_connect_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if provider_name not in auth_settings["identityProviders"]["customOpenIdConnectProviders"].keys():
+    if provider_name not in auth_settings.identity_providers.custom_open_id_connect_providers.keys():
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
 
-    custom_open_id_connect_providers = auth_settings["identityProviders"]["customOpenIdConnectProviders"]
-    registration = {}
+    # Set up provider configuration using provided parameters
+    custom_open_id_connect_providers: dict[str, CustomOpenIdConnectProvider] = auth_settings.identity_providers.custom_open_id_connect_providers
+    registration: OpenIdConnectRegistration = cmd.get_models("OpenIdConnectRegistration")
     if client_id is not None or client_secret_setting_name is not None or openid_configuration is not None:
-        if "registration" not in custom_open_id_connect_providers[provider_name].keys():
-            custom_open_id_connect_providers[provider_name]["registration"] = {}
-        registration = custom_open_id_connect_providers[provider_name]["registration"]
-
+        if not getattr(custom_open_id_connect_providers[provider_name], "registration", None):
+            setattr(custom_open_id_connect_providers[provider_name], "registration", cmd.get_models("OpenIdConnectRegistration"))
+        registration = custom_open_id_connect_providers[provider_name].registration
+        
     if client_secret_setting_name is not None or client_secret is not None:
-        if "clientCredential" not in custom_open_id_connect_providers[provider_name]["registration"].keys():
-            custom_open_id_connect_providers[provider_name]["registration"]["clientCredential"] = {}
+        if not getattr(registration, "client_credential", None):
+            setattr(registration, "client_credential", cmd.get_models("OpenIdConnectClientCredential"))
 
     if openid_configuration is not None:
-        if "openIdConnectConfiguration" not in custom_open_id_connect_providers[provider_name]["registration"].keys():
-            custom_open_id_connect_providers[provider_name]["registration"]["openIdConnectConfiguration"] = {}
+        if not getattr(registration, "open_id_connect_configuration", None):
+            setattr(registration, "open_id_connect_configuration", cmd.get_models("OpenIdConnectConfig"))
 
     if scopes is not None:
-        if "login" not in auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name].keys():
-            custom_open_id_connect_providers[provider_name]["login"] = {}
+        if not getattr(custom_open_id_connect_providers[provider_name], "login", None):
+            setattr(custom_open_id_connect_providers[provider_name], "login", cmd.get_models("OpenIdConnectLogin"))
 
     if client_id is not None:
-        registration["clientId"] = client_id
-    if client_secret_setting_name is not None:
-        registration["clientCredential"]["clientSecretSettingName"] = client_secret_setting_name
+        setattr(registration, "client_id", client_id)
+    if client_secret_setting_name is not None: # todo check client_credential logic
+        setattr(registration.client_credential, "client_secret_setting_name", client_secret_setting_name)
     if client_secret is not None:
         final_client_secret_setting_name = get_oidc_client_setting_app_setting_name(provider_name)
-        registration["clientSecretSettingName"] = final_client_secret_setting_name
+        setattr(registration.client_credential, "client_secret_setting_name", final_client_secret_setting_name) #todo check again
         settings = []
         settings.append(final_client_secret_setting_name + '=' + client_secret)
         update_app_settings(cmd, resource_group_name, name, slot=slot, slot_settings=settings)
     if openid_configuration is not None:
-        registration["openIdConnectConfiguration"]["wellKnownOpenIdConfiguration"] = openid_configuration
+        setattr(registration.open_id_connect_configuration, "well_known_open_id_configuration", openid_configuration)
     if scopes is not None:
-        custom_open_id_connect_providers[provider_name]["login"]["scopes"] = scopes.split(",")
+        setattr(custom_open_id_connect_providers[provider_name].login, "scopes", scopes.split(","))
     if client_id is not None or client_secret_setting_name is not None or openid_configuration is not None:
-        custom_open_id_connect_providers[provider_name]["registration"] = registration
-    auth_settings["identityProviders"]["customOpenIdConnectProviders"] = custom_open_id_connect_providers
+        setattr(custom_open_id_connect_providers[provider_name], "registration", registration)
+
+    # Update provider configuration
+    auth_settings.identity_providers.custom_open_id_connect_providers = custom_open_id_connect_providers
 
     updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
-    return updated_auth_settings["identityProviders"]["customOpenIdConnectProviders"][provider_name]
+    return getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)[provider_name]
 
 
 def remove_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None):  # pylint: disable=unused-argument
-    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)["properties"]
-    if "identityProviders" not in auth_settings.keys():
+    auth_settings = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    if not getattr(auth_settings, "identity_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if "customOpenIdConnectProviders" not in auth_settings["identityProviders"].keys():
+    if not getattr(auth_settings.identity_providers, "custom_open_id_connect_providers", None):
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    if provider_name not in auth_settings["identityProviders"]["customOpenIdConnectProviders"].keys():
+    if provider_name not in auth_settings.identity_providers.custom_open_id_connect_providers.keys():
         raise CLIError('Usage Error: The following custom OpenID Connect provider '
                        'has not been configured: ' + provider_name)
-    auth_settings["identityProviders"]["customOpenIdConnectProviders"].pop(provider_name, None)
+
+    auth_settings.identity_providers.custom_open_id_connect_providers.pop(provider_name, None)
     update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
     return {}
 # endregion

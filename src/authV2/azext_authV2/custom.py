@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License. See License.txt in the project root for license information.
 # --------------------------------------------------------------------------------------------
-# mypy: disable-error-code=import
+
 import json
 from re import A
 import re
@@ -936,7 +936,7 @@ def get_openid_connect_provider_settings(cmd, resource_group_name, name, provide
 def add_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None,  # pylint: disable=unused-argument
                                          client_id=None, client_secret_setting_name=None,  # pylint: disable=unused-argument
                                          openid_configuration=None, scopes=None,        # pylint: disable=unused-argument
-                                         client_secret=None, yes=False) -> CustomOpenIdConnectProvider:    # pylint: disable=unused-argument
+                                         client_secret=None, yes=False) -> CustomOpenIdConnectProvider:  # pylint: disable=unused-argument
     # Validate parameters
     if client_secret is not None and not yes:
         msg = 'Configuring --client-secret will add app settings to the web app. ' \
@@ -982,8 +982,11 @@ def add_openid_connect_provider_settings(cmd, resource_group_name, name, provide
         registration=registration, 
         login=login)
 
-    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
-    return getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)[provider_name]
+    updated_auth_settings: SiteAuthSettingsV2 = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
+    updated_providers: dict[str, CustomOpenIdConnectProvider] = getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)
+    if not updated_providers:
+        raise CLIError('Error adding OpenID Connect Provider settings.')
+    return updated_providers[provider_name]
 
 
 def update_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None,  # pylint: disable=unused-argument
@@ -1050,8 +1053,11 @@ def update_openid_connect_provider_settings(cmd, resource_group_name, name, prov
     # Update provider configuration
     auth_settings.identity_providers.custom_open_id_connect_providers = custom_open_id_connect_providers
 
-    updated_auth_settings = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
-    return getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)[provider_name]
+    updated_auth_settings: SiteAuthSettingsV2 = update_auth_settings_v2_helper(cmd, resource_group_name, name, auth_settings, slot)
+    updated_providers: dict[str, CustomOpenIdConnectProvider] = getattr(getattr(updated_auth_settings, "identity_providers", None), "custom_open_id_connect_providers", None)
+    if not updated_providers:
+        raise CLIError('Error adding OpenID Connect Provider settings.')
+    return updated_providers[provider_name]
 
 
 def remove_openid_connect_provider_settings(cmd, resource_group_name, name, provider_name, slot=None):  # pylint: disable=unused-argument

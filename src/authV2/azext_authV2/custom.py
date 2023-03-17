@@ -8,7 +8,7 @@ from re import A
 import re
 from knack.prompting import prompt_y_n
 from knack.util import CLIError
-from azure.cli.core.util import send_raw_request, shell_safe_json_parse
+from azure.cli.core.util import send_raw_request
 from azure.cli.command_modules.appservice._appservice_utils import _generic_site_operation
 from azure.cli.command_modules.appservice.custom import update_app_settings
 from azure.cli.core.azclierror import ArgumentUsageError
@@ -48,7 +48,7 @@ def get_auth_settings_v2(cmd, resource_group_name, name, slot=None):
 
 
 def update_auth_settings_v2_helper(cmd, resource_group_name, name, site_auth_settings_v2,
-                                      slot=None, overwrite_settings=False, is_upgrade=False):  # pylint: disable=unused-argument
+                                   slot=None, is_upgrade=False):  # pylint: disable=unused-argument
     is_using_v1 = get_config_version(cmd, resource_group_name, name, slot)["configVersion"] == 'v1'
     is_new_auth_app = is_app_new_to_auth(cmd, resource_group_name, name, slot)
 
@@ -57,13 +57,13 @@ def update_auth_settings_v2_helper(cmd, resource_group_name, name, site_auth_set
               'Update the auth settings using the az webapp auth-classic command group.'
         raise CLIError(msg)
 
-    if not overwrite_settings:  # if no auth v2 settings set, then default token store to true
-        if is_new_auth_app:
-            if not getattr(site_auth_settings_v2, "login", None):
-                setattr(site_auth_settings_v2, "login", cmd.get_models("Login"))
-            if not getattr(site_auth_settings_v2.login, "token_store", None):
-                setattr(site_auth_settings_v2.login, "token_store", cmd.get_models("TokenStore"))
-            setattr(site_auth_settings_v2.login.token_store, "enabled", True)
+    # If no auth v2 settings set, then default token store to true
+    if is_new_auth_app:
+        if not getattr(site_auth_settings_v2, "login", None):
+            setattr(site_auth_settings_v2, "login", cmd.get_models("Login"))
+        if not getattr(site_auth_settings_v2.login, "token_store", None):
+            setattr(site_auth_settings_v2.login, "token_store", cmd.get_models("TokenStore"))
+        setattr(site_auth_settings_v2.login.token_store, "enabled", True)
 
     return _generic_site_operation(cmd.cli_ctx, resource_group_name, name, 'update_auth_settings_v2', slot, site_auth_settings_v2)
 
@@ -102,7 +102,7 @@ def set_auth_settings_v2(cmd, resource_group_name, name, body=None, slot=None): 
         "config/authSettingsV2",
         "2020-12-01")
 
-    # TODO: Replace ARM call with SDK API after fixing swagger issues
+    # TODO: Replace ARM call with SDK API after fixing swagger issues (keeping as fallback for now)
     r = send_raw_request(cmd.cli_ctx, "PUT", request_url, None, None, json.dumps(final_json))
     return r.json()["properties"]
 
@@ -113,12 +113,7 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                             proxy_convention=None, proxy_custom_host_header=None,  # pylint: disable=unused-argument
                             proxy_custom_proto_header=None, excluded_paths=None, slot=None):  # pylint: disable=unused-argument
     existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
-    print("existing auth:", existing_auth)
     existing_auth = set_field_in_auth_settings(cmd, existing_auth, set_string)
-    print("using extension method:", existing_auth)
-    converted_object = shell_safe_json_parse(set_string)
-    print("using core method:", converted_object)
-    raise CLIError('Usage Error: Cannot use command az webapp auth upgrade when the app is using auth v2.')
 
     if enabled is not None:
         if not getattr(existing_auth, "platform", None):
@@ -156,7 +151,7 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
         if not getattr(existing_auth, "global_validation", None):
             setattr(existing_auth, "global_validation", cmd.get_models("GlobalValidation"))
         excluded_paths_list_temp = excluded_paths.strip("][}{").replace(" ", "").split(",")
-        excluded_paths_list = []
+        excluded_paths_list: list[str] = []
         for path in excluded_paths_list_temp:
             excluded_paths_list.append(path.strip("'"))
         setattr(existing_auth.global_validation, "excluded_paths", excluded_paths_list)
@@ -165,8 +160,7 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                                                           proxy_convention, proxy_custom_host_header,
                                                           proxy_custom_proto_header)
 
-    json_object = existing_auth
-    return update_auth_settings_v2_helper(cmd, resource_group_name, name, json_object, slot)
+    return update_auth_settings_v2_helper(cmd, resource_group_name, name, existing_auth, slot)
 # endregion
 
 # region webapp auth config-version
@@ -246,31 +240,47 @@ def is_app_new_to_auth(cmd, resource_group_name, name, slot):
     return getattr(existing_site_auth_settings_v2, "global_validation", None)
 
 
-def set_field_in_auth_settings_recursive(cmd, field_name_split, field_value, auth_settings):
+def set_field_in_auth_settings_recursive(cmd, field_name_split:list[str], field_value:str, auth_settings:SiteAuthSettingsV2):
+    curr_field_name = field_name_split[0]
+    
+    # At lowest level
     if len(field_name_split) == 1:
-        if not field_value.startswith('[') or not field_value.endswith(']'):
-            auth_settings.field_name_split[0] = field_value
+        # Validate field name
+        try:
+            getattr(auth_settings, curr_field_name)
+        except:
+            raise CLIError('Usage Error: --set is set to invalid value. "%s" is not a valid field.' % curr_field_name)
+        
+        # Set value
+        if "," in field_value: # TODO: can non-list values contain commas?
+            field_value_list_temp = field_value.strip("][}{").replace(" ", "").split(",")
+            field_value_list: list[str] = []
+            for value in field_value_list_temp:
+                field_value_list.append(value.strip("'"))
+            setattr(auth_settings, curr_field_name, field_value_list)
         else:
-            field_value_list_string = field_value[1:-1]
-            auth_settings.field_name_split[0] = field_value_list_string.split(",")
+            setattr(auth_settings, curr_field_name, field_value)
         return auth_settings
 
+    # Keep recursing until lowest level field
     remaining_field_names = field_name_split[1:]
-    if not getattr(auth_settings, field_name_split[0], None):
-        # TODO: try catch?
-        setattr(auth_settings, field_name_split[0], cmd.get_models(field_name_split[0]))
-    auth_settings.field_name_split[0] = set_field_in_auth_settings_recursive(cmd, remaining_field_names,
-                                                                              field_value,
-                                                                              auth_settings.field_name_split[0])
+    if not getattr(auth_settings, curr_field_name, None):
+        if not cmd.get_models(curr_field_name):
+            raise CLIError('Usage Error: --set is set to invalid value. "%s" is not a valid field.' % curr_field_name)
+        setattr(auth_settings, curr_field_name, cmd.get_models(curr_field_name))
+    curr_field_obj = getattr(auth_settings, curr_field_name, None)
+    setattr(auth_settings, curr_field_name, set_field_in_auth_settings_recursive(cmd, remaining_field_names,
+                                                                                 field_value,
+                                                                                 curr_field_obj))
     return auth_settings
 
 
-def set_field_in_auth_settings(cmd, auth_settings, set_string):
+def set_field_in_auth_settings(cmd, auth_settings:SiteAuthSettingsV2, set_string:str):
     if set_string is not None:
-        split1 = set_string.split("=")
-        fieldName = split1[0]
-        fieldValue = split1[1]
-        split2 = fieldName.split(".")
+        split1: list[str] = set_string.split("=")
+        fieldName: str = split1[0]
+        fieldValue: str = split1[1]
+        split2: list[str] = fieldName.split(".")
         auth_settings = set_field_in_auth_settings_recursive(cmd, split2, fieldValue, auth_settings)
     return auth_settings
 

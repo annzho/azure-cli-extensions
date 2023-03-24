@@ -113,12 +113,15 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
                             proxy_convention=None, proxy_custom_host_header=None,  # pylint: disable=unused-argument
                             proxy_custom_proto_header=None, excluded_paths=None, slot=None):  # pylint: disable=unused-argument
     existing_auth = get_auth_settings_v2(cmd, resource_group_name, name, slot)
+    # update existing auth with fields included in set_string
     existing_auth = set_field_in_auth_settings(cmd, existing_auth, set_string)
 
-    if enabled is not None:
+    # Bool flags must be set as bools: ['enabled', 'enable_token_store', 'require_https']
+
+    if enabled is not None:  # Bool flag
         if not getattr(existing_auth, "platform", None):
             setattr(existing_auth, "platform", cmd.get_models("AuthPlatform"))
-        setattr(existing_auth.platform, "enabled", enabled)
+        setattr(existing_auth.platform, "enabled", enabled == 'true')
 
     if runtime_version is not None:
         if not getattr(existing_auth, "platform", None):
@@ -140,12 +143,12 @@ def update_auth_settings_v2(cmd, resource_group_name, name, set_string=None, ena
             setattr(existing_auth, "global_validation", cmd.get_models("GlobalValidation"))
         setattr(existing_auth.global_validation, "redirect_to_provider", redirect_provider)
 
-    if enable_token_store is not None:
+    if enable_token_store is not None:  # Bool flag
         if not getattr(existing_auth, "login", None):
             setattr(existing_auth, "login", cmd.get_models("Login"))
         if not getattr(existing_auth.login, "token_store", None):
             setattr(existing_auth.login, "token_store", cmd.get_models("TokenStore"))
-        setattr(existing_auth.login.token_store, "enabled", enable_token_store)
+        setattr(existing_auth.login.token_store, "enabled", enable_token_store == 'true')
 
     if excluded_paths is not None:
         if not getattr(existing_auth, "global_validation", None):
@@ -237,11 +240,18 @@ def revert_to_auth_settings(cmd, resource_group_name, name, slot=None):  # pylin
 
 def is_app_new_to_auth(cmd, resource_group_name, name, slot):
     existing_site_auth_settings_v2 = get_auth_settings_v2(cmd, resource_group_name, name, slot)
-    return getattr(existing_site_auth_settings_v2, "global_validation", None)
+    return not getattr(existing_site_auth_settings_v2, "global_validation", None)
 
 
 def set_field_in_auth_settings_recursive(cmd, field_name_split:list[str], field_value:str, auth_settings:SiteAuthSettingsV2):
     curr_field_name = field_name_split[0]
+    platform_bools = ['enabled']
+    global_val_bools = ['require_authentication']
+    identity_provider_bools = ['enabled', 'disable_www_authenticate', 'is_auto_provisioned']
+    login_bools = ['enabled', 'preserve_url_fragments_for_logins', 'validate_nonce']
+    http_settings_bools = ['require_https']
+
+    bool_field_names = list(set(platform_bools + global_val_bools + identity_provider_bools + login_bools + http_settings_bools))
     
     # At lowest level
     if len(field_name_split) == 1:
@@ -252,7 +262,9 @@ def set_field_in_auth_settings_recursive(cmd, field_name_split:list[str], field_
             raise CLIError('Usage Error: --set is set to invalid value. "%s" is not a valid field.' % curr_field_name)
         
         # Set value
-        if "," in field_value: # TODO: can non-list values contain commas?
+        if curr_field_name in bool_field_names:  # for bool values
+            setattr(auth_settings, curr_field_name, field_value == 'true')
+        elif "," in field_value: # for list values TODO: can non-list values contain commas?
             field_value_list_temp = field_value.strip("][}{").replace(" ", "").split(",")
             field_value_list: list[str] = []
             for value in field_value_list_temp:
@@ -278,6 +290,8 @@ def set_field_in_auth_settings_recursive(cmd, field_name_split:list[str], field_
 def set_field_in_auth_settings(cmd, auth_settings:SiteAuthSettingsV2, set_string:str):
     if set_string is not None:
         split1: list[str] = set_string.split("=")
+        if len(split1) == 1:
+            raise CLIError('Usage Error: --set is set to invalid value. The value must be of the format "field=value".')
         fieldName: str = split1[0]
         fieldValue: str = split1[1]
         split2: list[str] = fieldName.split(".")
@@ -288,10 +302,10 @@ def set_field_in_auth_settings(cmd, auth_settings:SiteAuthSettingsV2, set_string
 def update_http_settings_in_auth_settings(cmd, auth_settings, require_https, proxy_convention,
                                           proxy_custom_host_header, proxy_custom_proto_header):
 
-    if require_https is not None:
+    if require_https is not None:  # Bool flag
         if not getattr(auth_settings, "http_settings", None):
             setattr(auth_settings, "http_settings", cmd.get_models("HttpSettings"))
-        setattr(auth_settings.http_settings, "require_https", require_https)
+        setattr(auth_settings.http_settings, "require_https", require_https == 'true')
 
     if proxy_convention is not None:
         if not getattr(auth_settings, "http_settings", None):

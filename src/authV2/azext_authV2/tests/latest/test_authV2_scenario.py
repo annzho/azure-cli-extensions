@@ -151,3 +151,5 @@ class Authv2ScenarioTest(ScenarioTest):
                               JMESPathCheck('facebookAppId', 'facebook_id')]).get_output_in_json()
 
         self.assertIn('https://audience1', result['allowedAudiences'])
+
+       #TODO: add test for new auth 

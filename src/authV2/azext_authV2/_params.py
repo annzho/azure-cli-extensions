@@ -66,7 +66,7 @@ def load_arguments(self, _):
         c.argument('proxy_custom_proto_header', options_list=['--proxy-custom-proto-header', '--custom-proto-header'],
                    help='The name of the header containing the scheme of the request.')
         c.argument('excluded_paths', options_list=['--excluded-paths'],
-                   help='The list of paths that should be excluded from authentication rules.')
+                   help='The comma delimited list of paths that should be excluded from authentication rules. Example format: [path1, path2]')
 
     with self.argument_context('webapp auth microsoft update') as c:
         c.argument('client_id', options_list=['--client-id'],
